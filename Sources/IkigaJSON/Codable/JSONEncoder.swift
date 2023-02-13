@@ -351,9 +351,9 @@ fileprivate final class _JSONEncoder: Encoder {
         didWriteValue = true
     }
 
-    func writeValue<F: BinaryFloatingPoint & LosslessStringConvertible>(_ value: F) {
+    func writeValue<F: BinaryFloatingPoint & LosslessStringConvertible & CVarArg>(_ value: F) {
         // TODO: Optimize
-        data.insert(contentsOf: String(value), at: &offset)
+        data.insert(contentsOf: String(format: "%.3f", value), at: &offset)
         didWriteValue = true
     }
     
@@ -488,7 +488,7 @@ fileprivate final class _JSONEncoder: Encoder {
         writeValue(value)
     }
     
-    func writeValue<F: BinaryFloatingPoint & LosslessStringConvertible>(_ value: F, forKey key: String) {
+    func writeValue<F: BinaryFloatingPoint & LosslessStringConvertible & CVarArg>(_ value: F, forKey key: String) {
         writeKey(key)
         writeValue(value)
     }
