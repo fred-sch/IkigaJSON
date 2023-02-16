@@ -58,3 +58,11 @@ public enum NilValueDecodingStrategy: Equatable {
     ///   - `decodeIfPresent()`: Throw `valueNotFound` when unkeyed container is at end or single-value container is empty.
     case treatNilValuesAsMissing
 }
+
+
+public enum NonConformingFloatEncodingStrategy: Equatable {
+    /// encode -inf, inf, and nan as optionals
+    case encodeAsNull
+    /// encode -inf as -inf, inf as inf, nan as nan
+    case `default`
+}

@@ -16,7 +16,10 @@ public struct JSONEncoderSettings {
     
     /// Defines how to act when a `nil` value is encountered during encoding.
     public var nilValueEncodingStrategy: NilValueEncodingStrategy = .default
-    
+
+    /// Defines how to act when a `nan` value is encountered during encoding floating point values
+    public var nonConformingFloatEncodingStrategy: NonConformingFloatEncodingStrategy = .default
+
     /// If a `nil` value is found, setting this to `true` will encode `null`. Otherwise the key is omitted.
     ///
     /// - Warning: This property is deprecated. Use `nilValueEncodingStrategy` instead. This property
@@ -353,8 +356,12 @@ fileprivate final class _JSONEncoder: Encoder {
 
     func writeValue<F: BinaryFloatingPoint & LosslessStringConvertible & CVarArg>(_ value: F) {
         // TODO: Optimize
-        data.insert(contentsOf: String(format: "%.3f", value), at: &offset)
-        didWriteValue = true
+        if !value.isFinite && settings.nonConformingFloatEncodingStrategy == .encodeAsNull {
+            writeNull()
+        } else {
+            data.insert(contentsOf: String(value), at: &offset)
+            didWriteValue = true
+        }
     }
     
     // Returns `true` if it was handled, false if it needs to be deferred

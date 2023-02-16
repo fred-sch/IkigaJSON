@@ -719,6 +719,26 @@ final class IkigaJSONTests: XCTestCase {
         
         XCTAssertEqual(Set(json.keys), ["nonOptional"])
     }
+
+    func testEncodeNonConformingFloats() throws {
+        var encoder = newEncoder
+        
+        struct Test: Codable {
+            let values: [Float]
+        }
+        let test = Test(values: [12.12345, .nan, .infinity, -.infinity, -.nan])
+
+        let json1 = try encoder.encode(test)
+        let string1 = String(data: json1, encoding: .utf8)!
+        
+        XCTAssertEqual(string1, "{\"values\":[12.12345,nan,inf,-inf,nan]}")
+
+        encoder.settings.nonConformingFloatEncodingStrategy = .encodeAsNull
+        let json2 = try encoder.encode(test)
+        let string2 = String(data: json2, encoding: .utf8)!
+        
+        XCTAssertEqual(string2, "{\"values\":[12.12345,null,null,null,null]}")
+    }
     
     func testEncodeNilAsNullFalseInDoubleOptionalScenarios() throws {
         var encoder = newEncoder
