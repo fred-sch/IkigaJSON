@@ -828,6 +828,45 @@ final class IkigaJSONTests: XCTestCase {
         
         XCTAssertEqual(string2, "{\"values\":[12.12345,null,null,null,null]}")
     }
+
+    func testFloatDecimalPlacesEncoding() throws {
+        let encoder = newEncoder
+
+        struct Test: Encodable {
+            var value1: SigFloat
+            let value2: SigFloat
+            let value3: Float
+        }
+
+        let test = Test(value1: SigFloat(12.0, decimalPlaces: 4), value2: 2.153425342523, value3: 2.34456)
+
+        let json = try encoder.encode(test)
+        let string = String(data: json, encoding: .utf8)!
+        XCTAssertEqual(string, "{\"value1\":12.0000,\"value2\":2.15,\"value3\":2.34456}")
+    }
+
+    func testFloatDecimalPlacesSettings() throws {
+        var encoder = newEncoder
+        encoder.settings.floatingPointDecimalPlaces = 2
+
+        struct Test: Encodable {
+            var value1: Float
+            let value2: Float
+            let value3: Float
+        }
+
+        let test = Test(value1: 12, value2: 2.153425342523, value3: 2.34456)
+        let json = try encoder.encode(test)
+        let string = String(data: json, encoding: .utf8)!
+        XCTAssertEqual(string, "{\"value1\":12.00,\"value2\":2.15,\"value3\":2.34}")
+
+        encoder.settings.floatingPointDecimalPlaces = 4
+
+        let array = [12.00030, 7, 4, 1.23456789]
+        let arrayJson = try encoder.encode(array)
+        let arrayString = String(data: arrayJson, encoding: .utf8)!
+        XCTAssertEqual(arrayString, "[12.0003,7.0000,4.0000,1.2346]")
+    }
     
     func testEncodeNilAsNullFalseInDoubleOptionalScenarios() throws {
         var encoder = newEncoder

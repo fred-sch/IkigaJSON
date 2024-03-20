@@ -20,6 +20,9 @@ public struct JSONEncoderSettings: @unchecked Sendable {
     /// Defines how to act when a `nan` value is encountered during encoding floating point values
     public var nonConformingFloatEncodingStrategy: NonConformingFloatEncodingStrategy = .default
 
+    /// Fixed decimal places for Floating point values
+    public var floatingPointDecimalPlaces: Int?
+
     /// If a `nil` value is found, setting this to `true` will encode `null`. Otherwise the key is omitted.
     ///
     /// - Warning: This property is deprecated. Use `nilValueEncodingStrategy` instead. This property
@@ -359,7 +362,22 @@ fileprivate final class _JSONEncoder: Encoder {
         if !value.isFinite && settings.nonConformingFloatEncodingStrategy == .encodeAsNull {
             writeNull()
         } else {
-            data.insert(contentsOf: String(value), at: &offset)
+            if let decimalPlaces = settings.floatingPointDecimalPlaces {
+                data.insert(contentsOf: String(format: "%.\(decimalPlaces)f", value), at: &offset)
+            } else {
+                data.insert(contentsOf: String(value), at: &offset)
+
+            }
+            didWriteValue = true
+        }
+    }
+
+    func writeValue(_ value: SigFloat) {
+        // TODO: Optimize
+        if !value.isFinite && settings.nonConformingFloatEncodingStrategy == .encodeAsNull {
+            writeNull()
+        } else {
+            data.insert(contentsOf: value.description, at: &offset)
             didWriteValue = true
         }
     }
@@ -368,6 +386,12 @@ fileprivate final class _JSONEncoder: Encoder {
     // If key isn't nil and anything is to be written, the key is written first
     func writeOtherValue<T: Encodable>(_ value: T, forKey key: String? = nil) throws -> Bool {
         switch value {
+        case let sigFloat as SigFloat:
+            if let key = key {
+                writeKey(key)
+            }
+            writeValue(sigFloat)
+            return true
         case let date as Date:
             switch settings.dateEncodingStrategy {
             case .deferredToDate:
@@ -521,6 +545,11 @@ fileprivate final class _JSONEncoder: Encoder {
     }
     
     func writeValue<F: BinaryFloatingPoint & LosslessStringConvertible & CVarArg>(_ value: F, forKey key: String) {
+        writeKey(key)
+        writeValue(value)
+    }
+
+    func writeValue(_ value: SigFloat, forKey key: String) {
         writeKey(key)
         writeValue(value)
     }
