@@ -3,7 +3,7 @@ import NIO
 
 
 /// These settings influence the encoding process.
-public struct JSONEncoderSettings {
+public struct JSONEncoderSettings: @unchecked Sendable {
     public init() {}
     
     /// The manner of expanding internal buffers for growing encoding demands
@@ -78,7 +78,7 @@ public struct JSONEncoderSettings {
 }
 
 /// The manner of expanding internal buffers for growing encoding demands
-public enum ExpansionMode {
+public enum ExpansionMode: Sendable {
     /// For limited RAM environments
     case smallest
     
@@ -116,7 +116,7 @@ final class SharedEncoderData {
     /// Any data after the userCapacity is lost
     func expand(to count: Int, usedCapacity size: Int) {
         let new = UnsafeMutablePointer<UInt8>.allocate(capacity: count)
-        new.assign(from: pointer, count: size)
+        new.update(from: pointer, count: size)
         pointer.deallocate()
         totalSize = count
         self.pointer = new
@@ -154,21 +154,21 @@ final class SharedEncoderData {
     /// Inserts the other autdeallocated storage into this storage
     func insert(contentsOf storage: SharedEncoderData, count: Int, at offset: inout Int) {
         beforeWrite(offset: offset, count: count)
-        self.pointer.advanced(by: offset).assign(from: storage.pointer, count: count)
+        self.pointer.advanced(by: offset).update(from: storage.pointer, count: count)
         offset = offset &+ count
     }
     
     /// Inserts the other autdeallocated storage into this storage
     func insert(contentsOf data: [UInt8], at offset: inout Int) {
         beforeWrite(offset: offset, count: data.count)
-        self.pointer.advanced(by: offset).assign(from: data, count: data.count)
+        self.pointer.advanced(by: offset).update(from: data, count: data.count)
         offset = offset &+ data.count
     }
     
     /// Inserts the other autdeallocated storage into this storage
     func insert(contentsOf storage: StaticString, at offset: inout Int) {
         beforeWrite(offset: offset, count: storage.utf8CodeUnitCount)
-        self.pointer.advanced(by: offset).assign(from: storage.utf8Start, count: storage.utf8CodeUnitCount)
+        self.pointer.advanced(by: offset).update(from: storage.utf8Start, count: storage.utf8CodeUnitCount)
         offset = offset &+ storage.utf8CodeUnitCount
     }
     
@@ -178,7 +178,7 @@ final class SharedEncoderData {
         let utf8 = string.utf8
         let count = utf8.withContiguousStorageIfAvailable { utf8String -> Int in
             self.beforeWrite(offset: writeOffset, count: utf8String.count)
-            self.pointer.advanced(by: writeOffset).assign(
+            self.pointer.advanced(by: writeOffset).update(
                 from: utf8String.baseAddress!,
                 count: utf8String.count
             )
@@ -190,7 +190,7 @@ final class SharedEncoderData {
         } else {
             let count = utf8.count
             let buffer = Array(utf8)
-            self.pointer.advanced(by: writeOffset).assign(
+            self.pointer.advanced(by: writeOffset).update(
                 from: buffer,
                 count: count
             )
@@ -206,7 +206,7 @@ final class SharedEncoderData {
 
 
 /// A JSON Encoder that aims to be largely functionally equivalent to Foundation.JSONEncoder.
-public struct IkigaJSONEncoder {
+public struct IkigaJSONEncoder: @unchecked Sendable {
     public var userInfo = [CodingUserInfoKey : Any]()
     
     /// These settings influence the encoding process.
@@ -373,10 +373,14 @@ fileprivate final class _JSONEncoder: Encoder {
             case .deferredToDate:
                 return false
             case .secondsSince1970:
-                key.map { writeKey($0) }
+                if let key = key {
+                    writeKey(key)
+                }
                 writeValue(date.timeIntervalSince1970)
             case .millisecondsSince1970:
-                key.map { writeKey($0) }
+                if let key = key {
+                    writeKey(key)
+                }
                 writeValue(date.timeIntervalSince1970 * 1000)
             case .iso8601:
                 let string: String
@@ -391,11 +395,15 @@ fileprivate final class _JSONEncoder: Encoder {
                 writeValue(string)
             case .formatted(let formatter):
                 let string = formatter.string(from: date)
-                key.map { writeKey($0) }
+                if let key = key {
+                    writeKey(key)
+                }
                 writeValue(string)
             case .custom(let custom):
                 let offsetBeforeKey = offset, hadWrittenValue = didWriteValue
-                key.map { writeKey($0) }
+                if let key = key {
+                    writeKey(key)
+                }
                 let encoder = _JSONEncoder(codingPath: codingPath, userInfo: userInfo, data: self.data)
                 try custom(date, encoder)
                 if encoder.didWriteValue {
@@ -416,11 +424,15 @@ fileprivate final class _JSONEncoder: Encoder {
                 return false
             case .base64:
                 let string = data.base64EncodedString()
-                key.map { writeKey($0) }
+                if let key = key {
+                    writeKey(key)
+                }
                 writeValue(string)
             case .custom(let custom):
                 let offsetBeforeKey = offset, hadWrittenValue = didWriteValue
-                key.map { writeKey($0) }
+                if let key = key {
+                    writeKey(key)
+                }
                 let encoder = _JSONEncoder(codingPath: codingPath, userInfo: userInfo, data: self.data)
                 try custom(data, encoder)
                 if encoder.didWriteValue {
@@ -434,6 +446,19 @@ fileprivate final class _JSONEncoder: Encoder {
                 throw JSONParserError.unknownJSONStrategy
             }
             
+            return true
+        case let url as URL:
+            if let key = key {
+                writeKey(key)
+            }
+            writeValue(url.absoluteString)
+            return true
+        case let decimal as Decimal:
+            if let key = key {
+                writeKey(key)
+            }
+            data.insert(contentsOf: decimal.description, at: &offset)
+            didWriteValue = true
             return true
         default:
             return false
@@ -700,3 +725,11 @@ fileprivate struct UnkeyedJSONEncodingContainer: UnkeyedEncodingContainer {
         return _JSONEncoder(codingPath: codingPath, userInfo: self.encoder.userInfo, data: self.encoder.data)
     }
 }
+
+#if swift(<5.8)
+extension UnsafeMutablePointer {
+    func update(from buffer: UnsafePointer<Pointee>, count: Int) {
+        self.assign(from: buffer, count: count)
+    }
+}
+#endif

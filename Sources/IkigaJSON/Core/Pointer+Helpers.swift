@@ -67,8 +67,10 @@ extension ByteBuffer {
 internal let allocator = ByteBufferAllocator()
 
 internal extension UInt8 {
+    static let backspace: UInt8 = 0x08
     static let tab: UInt8 = 0x09
     static let newLine: UInt8 = 0x0a
+    static let formFeed: UInt8 = 0x0c
     static let carriageReturn: UInt8 = 0x0d
     static let space: UInt8 = 0x20
     static let quote: UInt8 = 0x22
@@ -100,4 +102,9 @@ internal extension UInt8 {
     static let squareRight: UInt8 = 0x5d
     static let curlyLeft: UInt8 = 0x7b
     static let curlyRight: UInt8 = 0x7d
+
+    @usableFromInline
+    var isDigit: Bool {
+        self >= .zero && self <= .nine
+    }
 }

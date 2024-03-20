@@ -1,12 +1,12 @@
-# IkigaJSON
+<a href="https://unbeatable.software"><img src="./assets/IkigaJSON.png" /></a>
 
-IkigaJSON is a really fast JSON parser. It performed ~4x faster than macOS/iOS Foundation in our tests when decoding a type from JSON.
+IkigaJSON is a really fast JSON parser. IkigaJSON is competitive to the modern Foundation JSON in benchmarks, and outperforms older versions of Foundation JSON by a large margin.
 
-Aside from being more performant, IkigaJSON has a much lower and more stable memory footprint, too! By design, IkigaJSON scales better on larger JSON payloads than most other JSON implementations. All while providing an easy to use API with Codable support.
+Aside from being more performant, IkigaJSON has a much lower and more stable memory footprint, too! By design, IkigaJSON scales better than Foundation on larger JSON payloads. All while providing an easy to use API with Codable support.
 
 [Join our Discord](https://discord.gg/H6799jh) for any questions and friendly banter.
 
-[Read the Docs](https://orlandos.nl/docs/ikigajson)
+Please note that Swift libraries need to be built in RELEASE compilation mode in order to judge performnce. If you're testing performance on a DEBUG build, you'll find severe mis-optimisations by the compiler that cannot reasonably be fixed in libraries. When building Swift code on DEBUG compilation, it can be 10-20x slower than equivalent code on RELEASE.
 
 ### Server-Side Swift
 
@@ -38,6 +38,35 @@ var decoder = IkigaJSONDecoder()
 let user = try decoder.decode(User.self, from: data)
 ```
 
+### In Hummingbird 2
+
+Conform Ikiga to Hummingbird's protocols like so:
+
+```swift
+extension IkigaJSONEncoder: HBResponseEncoder {
+    public func encode(_ value: some Encodable, from request: HBRequest, context: some HBBaseRequestContext) throws -> HBResponse {
+        // Capacity should roughly cover the amount of data you regularly expect to encode
+        // However, the buffer will grow if needed
+        var buffer = context.allocator.buffer(capacity: 2048)
+        try self.encodeAndWrite(value, into: &buffer)
+        return HBResponse(
+            status: .ok, 
+            headers: [
+                .contentType: "application/json; charset=utf-8",
+            ], 
+            body: .init(byteBuffer: buffer)
+        )
+    }
+}
+
+extension IkigaJSONDecoder: HBRequestDecoder {
+    public func decode<T>(_ type: T.Type, from request: HBRequest, context: some HBBaseRequestContext) async throws -> T where T : Decodable {
+        let data = try await request.body.collate(maxSize: context.maxUploadSize)
+        return try self.decode(T.self, from: data)
+    }
+}
+```
+
 ### In Vapor 4
 
 Conform Ikiga to Vapor 4's protocols like so:
@@ -52,6 +81,20 @@ extension IkigaJSONEncoder: ContentEncoder {
         headers.contentType = .json
         try self.encodeAndWrite(encodable, into: &body)
     }
+
+    public func encode<E>(_ encodable: E, to body: inout ByteBuffer, headers: inout HTTPHeaders, userInfo: [CodingUserInfoKey : Sendable]) throws where E : Encodable {
+        var encoder = self
+        encoder.userInfo = userInfo
+        headers.contentType = .json
+        try encoder.encodeAndWrite(encodable, into: &body)
+    }
+
+    public func encode<E>(_ encodable: E, to body: inout ByteBuffer, headers: inout HTTPHeaders, userInfo: [CodingUserInfoKey : Any]) throws where E : Encodable {
+        var encoder = self
+        encoder.userInfo = userInfo
+        headers.contentType = .json
+        try encoder.encodeAndWrite(encodable, into: &body)
+    }
 }
 
 extension IkigaJSONDecoder: ContentDecoder {
@@ -61,6 +104,18 @@ extension IkigaJSONDecoder: ContentDecoder {
         headers: HTTPHeaders
     ) throws -> D {
         return try self.decode(D.self, from: body)
+    }
+    
+    public func decode<D>(_ decodable: D.Type, from body: ByteBuffer, headers: HTTPHeaders, userInfo: [CodingUserInfoKey : Sendable]) throws -> D where D : Decodable {
+        let decoder = IkigaJSONDecoder(settings: settings)
+        decoder.settings.userInfo = userInfo
+        return try decoder.decode(D.self, from: body)
+    }
+
+    public func decode<D>(_ decodable: D.Type, from body: ByteBuffer, headers: HTTPHeaders, userInfo: [CodingUserInfoKey : Any]) throws -> D where D : Decodable {
+        let decoder = IkigaJSONDecoder(settings: settings)
+        decoder.settings.userInfo = userInfo
+        return try decoder.decode(D.self, from: body)
     }
 }
 ```
@@ -73,7 +128,7 @@ decoder.settings.dateDecodingStrategy = .iso8601
 ContentConfiguration.global.use(decoder: decoder, for: .json)
 
 var encoder = IkigaJSONEncoder()
-encoder.settings.dateDecodingStrategy = .iso8601
+encoder.settings.dateEncodingStrategy = .iso8601
 ContentConfiguration.global.use(encoder: encoder, for: .json)
 ```
 

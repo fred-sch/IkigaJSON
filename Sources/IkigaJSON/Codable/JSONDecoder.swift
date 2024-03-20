@@ -1,5 +1,11 @@
 import Foundation
+import NIOConcurrencyHelpers
 import NIO
+
+enum JSONDecoderError: Error {
+    case invalidURL(String)
+    case invalidDecimal(String)
+}
 
 @available(OSX 10.12, iOS 10, *)
 let isoFormatter = ISO8601DateFormatter()
@@ -29,7 +35,7 @@ func date(from string: String) throws -> Date {
 internal enum SuperCodingKey: String, CodingKey { case `super` }
 
 /// These settings can be used to alter the decoding process.
-public struct JSONDecoderSettings {
+public struct JSONDecoderSettings: @unchecked Sendable {
     public init() {}
     
     /// This userInfo is accessible by the Decodable types that are being created
@@ -66,12 +72,17 @@ public struct JSONDecoderSettings {
 }
 
 /// A JSON Decoder that aims to be largely functionally equivalent to Foundation.JSONDecoder with more for optimization.
-public final class IkigaJSONDecoder {
+public final class IkigaJSONDecoder: Sendable {
+    private let settingsBox: NIOLockedValueBox<JSONDecoderSettings>
+    
     /// These settings can be used to alter the decoding process.
-    public var settings: JSONDecoderSettings
+    public var settings: JSONDecoderSettings {
+        get { settingsBox.withLockedValue { $0 } }
+        set { settingsBox.withLockedValue { $0 = newValue } }
+    }
     
     public init(settings: JSONDecoderSettings = JSONDecoderSettings()) {
-        self.settings = settings
+        self.settingsBox = .init(settings)
     }
     
     /// Parses the Decodable type from an UnsafeBufferPointer.
@@ -281,6 +292,17 @@ fileprivate struct _JSONDecoder: Decoder {
             @unknown default:
                 throw JSONParserError.unknownJSONStrategy
             }
+        case is URL.Type:
+            let string = try singleValueContainer().decode(String.self)
+            
+            guard let url = URL(string: string) else {
+                throw JSONDecoderError.invalidURL(string)
+            }
+            
+            return url as! D
+        case is Decimal.Type:
+            let double = try singleValueContainer().decode(Double.self)
+            return Decimal(floatLiteral: double) as! D
         default:
             break
         }
@@ -409,14 +431,11 @@ fileprivate struct KeyedJSONDecodingContainer<Key: CodingKey>: KeyedDecodingCont
     
     func decode(_ type: Float.Type, forKey key: Key) throws -> Float { return try Float(self.decode(Double.self, forKey: key)) }
     func decode(_ type: Double.Type, forKey key: Key) throws -> Double {
-        guard
-            let (bounds, floating) = floatingBounds(forKey: key),
-            let double = bounds.makeDouble(from: decoder.pointer, floating: floating)
-        else {
+        guard let (bounds, floating) = floatingBounds(forKey: key) else {
             throw JSONParserError.decodingError(expected: type, keyPath: codingPath + [key])
         }
         
-        return double
+        return bounds.makeDouble(from: decoder.pointer, floating: floating)
     }
         
     func decodeInt<F: FixedWidthInteger>(_ type: F.Type, forKey key: Key) throws -> F {
@@ -436,7 +455,7 @@ fileprivate struct KeyedJSONDecodingContainer<Key: CodingKey>: KeyedDecodingCont
     func decode(_ type: UInt32.Type, forKey key: Key) throws -> UInt32 { return try decodeInt(type, forKey: key) }
     func decode(_ type: UInt64.Type, forKey key: Key) throws -> UInt64 { return try decodeInt(type, forKey: key) }
     
-    private func subDecoder<Key: CodingKey>(forKey key: Key, orThrow failureError: Error, appendingToPath: Bool = true) throws -> _JSONDecoder {
+    private func subDecoder<NestedKey: CodingKey>(forKey key: NestedKey, orThrow failureError: Error, appendingToPath: Bool = true) throws -> _JSONDecoder {
         guard let (_, offset) = self.decoder.description.valueOffset(
             forKey: self.decoder.string(forKey: key),
             convertingSnakeCasing: self.decoder.snakeCasing,
@@ -480,12 +499,13 @@ fileprivate struct UnkeyedJSONDecodingContainer: UnkeyedDecodingContainer {
 
     var codingPath: [CodingKey] { decoder.codingPath }
     var currentIndex = 0
-    var count: Int?
+    var count: Int? {
+        decoder.description.arrayObjectCount()
+    }
     var isAtEnd: Bool { currentIndex >= (count ?? 0) }
     
     init(decoder: _JSONDecoder) {
         self.decoder = decoder
-        self.count = decoder.description.arrayObjectCount()
     }
     
     mutating func decodeNil() throws -> Bool {
@@ -580,14 +600,11 @@ fileprivate struct UnkeyedJSONDecodingContainer: UnkeyedDecodingContainer {
     }
     
     mutating func decode(_ type: Double.Type) throws -> Double {
-        guard
-            let (bounds, floating) = floatingBounds(),
-            let double = bounds.makeDouble(from: decoder.pointer, floating: floating)
-        else {
+        guard let (bounds, floating) = floatingBounds() else {
             throw JSONParserError.decodingError(expected: type, keyPath: codingPath)
         }
         
-        return double
+        return bounds.makeDouble(from: decoder.pointer, floating: floating)
     }
     
     mutating func decode(_ type: Float.Type) throws -> Float { return Float(try self.decode(Double.self)) }
@@ -680,14 +697,11 @@ fileprivate struct SingleValueJSONDecodingContainer: SingleValueDecodingContaine
     }
     
     func decode(_ type: Double.Type) throws -> Double {
-        guard
-            let (bounds, floating) = floatingBounds(),
-            let double = bounds.makeDouble(from: decoder.pointer, floating: floating)
-        else {
+        guard let (bounds, floating) = floatingBounds() else {
             throw JSONParserError.decodingError(expected: type, keyPath: codingPath)
         }
         
-        return double
+        return bounds.makeDouble(from: decoder.pointer, floating: floating)
     }
     
     func decode(_ type: Float.Type) throws -> Float { return try Float(decode(Double.self)) }

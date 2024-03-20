@@ -34,6 +34,57 @@ final class IkigaJSONTests: XCTestCase {
         
         XCTAssertNoThrow(try IkigaJSONDecoder().decode([UInt64].self, from: json))
     }
+
+    func testURL() throws {
+        struct Info: Codable, Equatable {
+            let website: URL
+        }
+
+        let domain = "https://unbeatable.software"
+        let info = Info(website: URL(string: domain)!)
+        let jsonObject = try IkigaJSONEncoder().encodeJSONObject(from: info)
+        XCTAssertEqual(jsonObject["website"].string, domain)
+        let info2 = try IkigaJSONDecoder().decode(Info.self, from: jsonObject.data)
+        XCTAssertEqual(info, info2)
+    }
+
+    func testDecimal() throws {
+        struct Info: Codable, Equatable {
+            let secretNumber: Decimal
+        }
+
+        let secretNumber: Decimal = 3.1414
+        let info = Info(secretNumber: secretNumber)
+        let jsonObject = try IkigaJSONEncoder().encodeJSONObject(from: info)
+        XCTAssertEqual(jsonObject["secretNumber"].double!, 3.1414, accuracy: 0.001)
+        let info2 = try IkigaJSONDecoder().decode(Info.self, from: jsonObject.data)
+        XCTAssertEqual(info, info2)
+    }
+
+    func testEscapedUnicode() throws {
+        do {
+            let json: Data = #"{"simple":"\u00DF", "complex": "\ud83d\udc69\u200d\ud83d\udc69"}"#.data(using: .utf8)!
+
+            let result = try IkigaJSONDecoder().decode([String: String].self, from: json)
+            XCTAssertEqual(result, ["simple": "\u{00DF}", "complex": "\u{1F469}\u{200D}\u{1F469}"])
+        }
+
+        do {
+            let json: Data = #"{"simple":"\u00DFhello world", "complex": "\uD83D\uDC69\u200D\uD83D\uDC69\u200D\uD83D\uDC67\u200D\uD83D\uDC67hello world"}"#.data(using: .utf8)!
+
+            let result = try IkigaJSONDecoder().decode([String: String].self, from: json)
+            XCTAssertEqual(result, ["simple": "ßhello world", "complex": "👩‍👩‍👧‍👧hello world"])
+        }
+    }
+
+    func testEscapedUnicodeWeis() throws {
+        do {
+            let json: Data = #"{"foo":"\u0022wei\u00DF\u0022"}"#.data(using: .utf8)!
+
+            let result = try IkigaJSONDecoder().decode([String: String].self, from: json)
+            XCTAssertEqual(result, ["foo": #""weiß""#])
+        }
+    }
     
     func testPropertyWrapper() throws {
         @propertyWrapper struct FluentPropertyTest<Value: Codable & Equatable>: Codable, Equatable {
@@ -193,6 +244,44 @@ final class IkigaJSONTests: XCTestCase {
         
         let test = try Foundation.JSONDecoder().decode(Test.self, from: object.data)
         XCTAssertEqual(test.yes, "b")
+    }
+
+    func testFormFeedParsing() throws  {
+        let string = #"""
+        {
+            "hi": "\f"
+        }
+        """#.data(using: .utf8)!
+        
+        let object = try JSONObject(data: string)
+        XCTAssertEqual(object["hi"].string, "\u{c}")
+    }
+
+    func testFormFeedEncoding() throws {
+        let object: JSONObject = [
+            "hi": "\u{c}"
+        ]
+        
+        XCTAssertEqual(object.string, #"{"hi":"\f"}"#)
+    }
+
+    func testBackspaceParsing() throws  {
+        let string = #"""
+        {
+            "hi": "\b"
+        }
+        """#.data(using: .utf8)!
+        
+        let object = try JSONObject(data: string)
+        XCTAssertEqual(object["hi"].string, "\u{8}")
+    }
+
+    func testBackspaceEncoding() throws {
+        let object: JSONObject = [
+            "hi": "\u{8}"
+        ]
+        
+        XCTAssertEqual(object.string, #"{"hi":"\b"}"#)
     }
     
     func testBackslashWorks() throws {

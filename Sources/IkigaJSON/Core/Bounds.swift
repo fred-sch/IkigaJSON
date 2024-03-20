@@ -24,7 +24,7 @@ internal struct Bounds {
     ///
     /// - see: `makeStringFromData` for more information
     func makeString(from pointer: UnsafePointer<UInt8>, escaping: Bool, unicode: Bool) -> String? {
-        if let data = makeStringData(from: pointer, escaping: escaping, unicode: unicode) {
+        if let data = try? makeStringData(from: pointer, escaping: escaping, unicode: unicode) {
             return String(data: data, encoding: .utf8)
         }
         
@@ -36,60 +36,96 @@ internal struct Bounds {
     ///
     /// If `escaping` is false, the string is assumed unescaped and no additional effort will be put
     /// towards unescaping.
-    func makeStringData(from pointer: UnsafePointer<UInt8>, escaping: Bool, unicode: Bool) -> Data? {
+    func makeStringData(from pointer: UnsafePointer<UInt8>, escaping: Bool, unicode: Bool) throws -> Data? {
         var data = Data(bytes: pointer + Int(offset), count: Int(length))
         
         // If we can't take a shortcut by decoding immediately thanks to an escaping character
         if escaping || unicode {
-            var length = Int(self.length)
             var i = 0
-            
-            next: while i < length {
-                defer {
-                    i = i &+ 1
+            var unicodes = [UInt16]()
+
+            func flushUnicodes() {
+                if !unicodes.isEmpty {
+                    let character = String(utf16CodeUnits: unicodes, count: unicodes.count)
+                    data.insert(contentsOf: character.utf8, at: i)
+                    unicodes.removeAll(keepingCapacity: true)
                 }
-                
+            }
+            
+            next: while i < data.count {
                 let byte = data[i]
                 
                 unescape: if escaping {
                     // If this character is not a baskslash or this was the last character
                     // We don't need to unescape the next character
                     if byte != .backslash || i &+ 1 >= length {
+                        // Flush unprocessed unicodes and move past this character
+                        flushUnicodes()
+                        i = i &+ 1
                         break unescape
                     }
                     
                     // Remove the backslash and translate the next character
                     data.remove(at: i)
-                    length = length &- 1
                     
                     switch data[i] {
                     case .backslash, .solidus, .quote:
-                        continue next // just removal needed
+                        // just removal needed
+                        flushUnicodes()
+
+                        // Move past this character
+                        i = i &+ 1
+
+                        continue next
                     case .u:
                         // `\u` indicates a unicode character
                         data.remove(at: i)
-                        length = length &- 1
-                        decodeUnicode(from: &data, offset: i, length: &length)
+                        let unicode = try decodeUnicode(from: &data, offset: &i)
+                        unicodes.append(unicode)
+
+                        // Continue explicitly, so that we do not trigger the unicode 'flush' flow
+                        continue next
                     case .t:
                         data[i] = .tab
+                        // Move past this character
+                        i = i &+ 1
                     case .r:
                         data[i] = .carriageReturn
+                        // Move past this character
+                        i = i &+ 1
                     case .n:
                         data[i] = .newLine
-                    case .f: // form feed, will just be passed on
-                        return nil
-                    case .b: // backspace, will just be passed on
-                        return nil
+                        // Move past this character
+                        i = i &+ 1
+                    case .f:
+                        data[i] = .formFeed
+                        // Move past this character
+                        i = i &+ 1
+                    case .b:
+                        data[i] = .backspace
+                        // Move past this character
+                        i = i &+ 1
                     default:
-                        // Try unicode decoding
-                        break unescape
+                        throw JSONParserError.unexpectedEscapingToken
                     }
-                    
+
+                    // 'flush' the accumulated `unicodes` to the buffer
+                    flushUnicodes()
+
                     continue next
+                } else {
+                    // End of unicodes, flush them
+                    flushUnicodes()
+
+                    // Move past this character
+                    i = i &+ 1
                 }
             }
+
+            // End of string, flush unicode
+            flushUnicodes()
         }
-        
+
         return data
     }
     
@@ -101,18 +137,18 @@ internal struct Bounds {
     /// Uses the fast path for doubles if possible, when failing falls back to Foundation.
     ///
     /// https://www.exploringbinary.com/fast-path-decimal-to-floating-point-conversion/
-    internal func makeDouble(from pointer: UnsafePointer<UInt8>, floating: Bool) -> Double? {
+    internal func makeDouble(from pointer: UnsafePointer<UInt8>, floating: Bool) -> Double {
         let offset = Int(self.offset)
         let length = Int(self.length)
-        /// Falls back to the foundation implementation which makes too many copies for this use case
-        ///
-        /// Used when the implementation is unsure
-        let slice = UnsafeBufferPointer(start: pointer + offset, count: length)
-        if let string = String(bytes: slice, encoding: .utf8) {
-            return Double(string)
+
+        if floating {
+            /// Falls back to the foundation implementation which makes too many copies for this use case
+            ///
+            /// Used when the implementation is unsure
+            return strtod(pointer + offset, length: length)
+        } else {
+            return strtoi(pointer + offset, length: length)
         }
-        
-        return nil
     }
     
     internal func makeInt(from pointer: UnsafePointer<UInt8>) -> Int? {
@@ -122,21 +158,124 @@ internal struct Bounds {
     }
 }
 
-// FIXME: Test, probably broken still
-fileprivate func decodeUnicode(from data: inout Data, offset: Int, length: inout Int) {
-    var offset = offset
-    
-    return data.withUnsafeMutableBytes { buffer in
-        let bytes = buffer.bindMemory(to: UInt8.self).baseAddress!.advanced(by: offset)
-        
-        while offset < length {
-            guard let base = bytes[offset].decodeHex(), let secondHex = bytes[offset &+ 1].decodeHex() else {
-                return
-            }
-            
-            bytes.pointee = (base << 4) &+ secondHex
-            length = length &- 1
-            offset = offset &+ 2
+struct UTF8ParsingError: Error {}
+
+fileprivate func decodeUnicode(from data: inout Data, offset: inout Int) throws -> UInt16 {
+    let hexCharacters = 4
+    guard data.count - offset >= hexCharacters else {
+        throw UTF8ParsingError()
+    }
+
+    guard
+        let hex0 = data.remove(at: offset).decodeHex(),
+        let hex1 = data.remove(at: offset).decodeHex(),
+        let hex2 = data.remove(at: offset).decodeHex(),
+        let hex3 = data.remove(at: offset).decodeHex()
+    else {
+        throw UTF8ParsingError()
+    }
+
+    var unicode: UInt16 = 0
+    unicode &+= UInt16(hex0) &<< 12
+    unicode &+= UInt16(hex1) &<< 8
+    unicode &+= UInt16(hex2) &<< 4
+    unicode &+= UInt16(hex3)
+
+    return unicode
+}
+
+fileprivate func strtoi(_ pointer: UnsafePointer<UInt8>, length: Int) -> Double {
+    var pointer = pointer
+    let endPointer = pointer + length
+    var notAtEnd: Bool { pointer != endPointer }
+
+    var result = 0
+    while notAtEnd, pointer.pointee.isDigit {
+        result &*= 10
+        result &+= numericCast(pointer.pointee &- .zero)
+        pointer += 1
+    }
+    return Double(result)
+}
+
+fileprivate func strtod(_ pointer: UnsafePointer<UInt8>, length: Int) -> Double {
+    var pointer = pointer
+    let endPointer = pointer + length
+    var notAtEnd: Bool { pointer != endPointer }
+
+    var result: Double
+    var base = 0
+    var sign: Double = 1
+
+    switch pointer.pointee {
+    case .minus:
+        sign = -1
+        pointer += 1
+    case .plus:
+        sign = 1
+        pointer += 1
+    default:
+        ()
+    }
+
+    while notAtEnd, pointer.pointee.isDigit {
+        base &*= 10
+        base &+= numericCast(pointer.pointee &- .zero)
+        pointer += 1
+    }
+
+    result = Double(base)
+
+    guard notAtEnd else {
+        return result * sign
+    }
+
+    if pointer.pointee == .fullStop {
+        pointer += 1
+
+        var fraction = 0
+        var divisor = 1
+
+        while notAtEnd, pointer.pointee.isDigit {
+            fraction &*= 10
+            fraction &+= numericCast(pointer.pointee &- .zero)
+            divisor &*= 10
+            pointer += 1
+        }
+
+        result += Double(fraction) / Double(divisor)
+
+        guard notAtEnd else {
+            return result * sign
         }
     }
+
+    guard pointer.pointee == .e || pointer.pointee == .E else {
+        return result * sign
+    }
+
+    pointer += 1
+    var exponent = 0
+    var exponentSign = 1
+
+    switch pointer.pointee {
+    case .minus:
+        exponentSign = -1
+        pointer += 1
+    case .plus:
+        exponentSign = 1
+        pointer += 1
+    default:
+        ()
+    }
+
+    while notAtEnd, pointer.pointee.isDigit {
+        exponent &*= 10
+        exponent &+= numericCast(pointer.pointee &- .zero)
+        pointer += 1
+    }
+    exponent *= exponentSign
+    result *= pow(10, Double(exponent))
+
+    return result * sign
 }
